@@ -33,17 +33,16 @@
  * We include a benchmark of the library with analytics functions.
  * The program can be build as follows
  * @code
- * gcc -Wall -g -I/usr/local/include  -o meos_benchmark meos_benchmark.c -L/usr/local/lib -lmeos 
+ * gcc -Wall -g -I/usr/local/include  -o meos_benchmark meos_benchmark.c -L/usr/local/lib -lmeos
  * @endcode
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
 #include <assert.h>
 #include <float.h>
-
+#include <proj.h>
 /* MEOS */
 #include <meos.h>
 #include <meos_internal.h>
@@ -68,14 +67,12 @@
 /* Maximum number of places of interest */
 #define MAX_AREAS 3
 
-
-int count=0;
+int count = 0;
 
 typedef struct
 {
   GSERIALIZED *geom;
 } area_record;
-
 
 typedef struct
 {
@@ -89,16 +86,13 @@ typedef struct
   double accuracy;
 } car_point_record;
 
-
 typedef struct
 {
-  long int trj_id;   /* Identifier of the trip */
+  long int trj_id; /* Identifier of the trip */
   TSequence *trip; /* Array of Latest observations of the trip, by id */
 } trip_record;
 
-
-int
-main(int argc, char **argv)
+int main(int argc, char **argv)
 {
   car_point_record rec;
   area_record areaRead;
@@ -126,7 +120,6 @@ main(int argc, char **argv)
   int i;
   /* Return value */
   int return_value = 0;
-
   /***************************************************************************
    * Section 1: Initialize MEOS, open the input AIS file
    ***************************************************************************/
@@ -143,19 +136,17 @@ main(int argc, char **argv)
 
   printf("file in opened\n");
 
-  if (! fileIn)
+  if (!fileIn)
   {
     printf("Error opening input file\n");
     return_value = 1;
     goto cleanup;
   }
-
   /***************************************************************************
    * Section 2: Read input file line by line and append each observation as a
    * temporal point in MEOS
    ***************************************************************************/
-
-  //printf("Accumulating %d instants before sending them to the logfile\n" "(one marker every logfile update)\n", NO_INSTANTS_BATCH);
+  // printf("Accumulating %d instants before sending them to the logfile\n" "(one marker every logfile update)\n", NO_INSTANTS_BATCH);
   /* Read the first line of the file with the headers */
   fscanf(fileIn, "%1023s\n", text_buffer);
 
@@ -163,26 +154,22 @@ main(int argc, char **argv)
   do
   {
     int read = fscanf(fileIn, "%32[^,],%ld,%ld,%lf,%lf,%lf,%lf,%lf\n",
-      text_buffer, &rec.id,&rec.trj_id, &rec.Latitude, &rec.Longitude, &rec.speed,&rec.bearing,&rec.accuracy);
+                      text_buffer, &rec.id, &rec.trj_id, &rec.Latitude, &rec.Longitude, &rec.speed, &rec.bearing, &rec.accuracy);
     /* Transform the string representing the timestamp into a timestamp value */
     rec.T = pg_timestamp_in(text_buffer, -1);
-
     if (read == 8)
       no_records++;
-
-    if (read != 8 && ! feof(fileIn))
+    if (read != 8 && !feof(fileIn))
     {
       printf("Record with missing values ignored\n");
       no_nulls++;
     }
-
     if (ferror(fileIn))
     {
       printf("Error reading file\n");
       fclose(fileIn);
-      //fclose(fileOut);
+      // fclose(fileOut);
     }
-
     /* Find the place to store the new instant */
     int car = -1;
     for (i = 0; i < MAX_TRIPS; i++)
@@ -198,7 +185,7 @@ main(int argc, char **argv)
       car = numcars++;
       if (car == MAX_TRIPS)
       {
-        printf("The maximum number of cars in the input file is bigger than %d",MAX_TRIPS);
+        printf("The maximum number of cars in the input file is bigger than %d", MAX_TRIPS);
         return_value = 1;
         goto cleanup;
       }
@@ -212,233 +199,225 @@ main(int argc, char **argv)
      */
     char *t_out = pg_timestamp_out(rec.T);
     sprintf(point_buffer, "SRID=4326;Point(%lf %lf)@%s+00", rec.Longitude,
-        rec.Latitude, t_out);
+            rec.Latitude, t_out);
 
-    //windowManager(NO_INSTANTS_BATCH,cars, car,fileOut);
+    // windowManager(NO_INSTANTS_BATCH,cars, car,fileOut);
     free(t_out);
     /* Append the last observation */
-    TInstant *inst = (TInstant *) tgeompoint_in(point_buffer);
-    if (! allcars[car].trip)
-      allcars[car].trip = tsequence_make_exp((const TInstant **) &inst, 1,
-        NO_INSTANTS_BATCH, true, true, LINEAR, false);
+    TInstant *inst = (TInstant *)tgeompoint_in(point_buffer);
+    if (!allcars[car].trip)
+      allcars[car].trip = tsequence_make_exp((const TInstant **)&inst, 1,
+                                             NO_INSTANTS_BATCH, true, true, LINEAR, false);
     else
-      tsequence_append_tinstant(allcars[car].trip , inst, 1000, maxt,true);
+      tsequence_append_tinstant(allcars[car].trip, inst, 1000, maxt, true);
+
   } while (!feof(fileIn));
 
+  for (size_t i = 0; i < numcars; i++)
+  {
+    /* Transform the trip from SRID 4326 to a different SRID */
+    Temporal *trip_transformed = tpoint_transform((const Temporal *)allcars[i].trip, 3414);
+    allcars[i].trip = (TSequence *)trip_transformed;
+  }
+
   t1 = clock() - t1;
-  double time_taken1 = ((double) t1) / CLOCKS_PER_SEC;
+  double time_taken1 = ((double)t1) / CLOCKS_PER_SEC;
   printf("The program took %f seconds to read and create trajectories\n", time_taken1);
 
   printf("%d records read.\n%d incomplete records ignored.\n%d cars\n",
-    no_records, no_nulls,numcars);
-
-
-    /***************************************************************************
+         no_records, no_nulls, numcars);
+  /***************************************************************************
    * Section 3: Create areas geometry
    ***************************************************************************/
-    clock_t t2 = clock();
+  clock_t t2 = clock();
 
-    char *polygon_wkt_Bay = "SRID=4326;Polygon((103.859 1.2754,103.859 1.2856,103.8705 1.2856,103.8705 1.2754,103.859 1.2754))";
-    areas[0].geom = pgis_geometry_in(polygon_wkt_Bay,-1);
-    printf("Created Bay\n");
+  const STBox *bay = stbox_in("SRID=3414;STBOX X((30961.617,28573.053),(30990.461,30195.766))");
+  printf("Created Bay\n");
 
-    
-    char *polygon_wkt_Airport = "SRID=4326;Polygon((103.9719 1.3213,103.9719 1.3459,103.9904 1.3459,103.9904 1.3213,103.9719 1.3213))";
-    areas[1].geom = pgis_geometry_in(polygon_wkt_Airport,-1);
-    printf("Created Airport\n");
+  const STBox *airport = stbox_in("SRID=3414;STBOX X((43239.013,31804.933),(43275.64002746976,39423.317))");
+  printf("Created Airport\n");
 
-   /***************************************************************************
+  /***************************************************************************
    * Section 4: Create bounding box that incorates both areas
    ****************************************************************************/
-    /*Creating Bounding Box*/
-    char *polygon_wkt_BoundingBox = "SRID=4326;Polygon((103.859 1.2754,103.859 1.3459,
-    103.9904 1.3459,103.9904 1.2754,103.859 1.2754))";
-    areas[2].geom = pgis_geometry_in(polygon_wkt_BoundingBox,-1);
+  /*Creating Bounding Box*/
+  const STBox *bigBB = stbox_in("SRID=3414;STBOX X((30683.208342237882,28281.414562418802),(51474.93690994092,39920.56424274336))");
+  printf("Created bigBB\n");
 
-    /* separate allcars that are near the bounding box */
-    for (size_t i = 0; i < numcars; i++)
-    {
-     if (eintersects_tpoint_geo((const Temporal *) allcars[i].trip, areas[2].geom))
-      {
-        cars[no_carsBB].trj_id = allcars[i].trj_id;
-        cars[no_carsBB].trip = tsequence_copy(allcars[i].trip);
-        no_carsBB++;
-      }
+  /* separate allcars that are near the bounding box */
+  // Assuming allcars, areas, and no_carsBB are defined and initialized
+  // Assuming allcars, areas, and no_carsBB are defined and initialized
+
+  for (int i = 0; i < numcars-1 ; i++) {
+    if (allcars[i].trip == NULL) {
+      printf("allcars[%d].trip is NULL\n", i);
+      continue; // Skip the rest of the loop if trip is NULL
     }
-    printf("%d cars in the bounding box\n", no_carsBB);
-  
-    t2 = clock() - t2;
-    double time_taken2 = ((double) t2) / CLOCKS_PER_SEC;
-    printf("The program took %f seconds to create areas and check intersections with the bounding box\n", time_taken2);
+    if (tpoint_at_stbox((const Temporal *)allcars[i].trip,bay, true))
+    {
+      cars[no_carsBB].trj_id = allcars[i].trj_id;
+      cars[no_carsBB].trip = tsequence_copy(allcars[i].trip);
+      no_carsBB++;
+    }
+  }
+
+  // Check if cars array has enough space
+  if (sizeof(allcars) / sizeof(allcars[0]) < no_carsBB) {
+    printf("Not enough space in allcars array\n");
+    return 1; // Or handle the error appropriately
+  }
+  printf("%d cars in the bounding box\n", no_carsBB);
+
+  t2 = clock() - t2;
+  double time_taken2 = ((double)t2) / CLOCKS_PER_SEC;
+  printf("The program took %f seconds to create areas and check intersections with the bounding box\n", time_taken2);
 
   /***************************************************************************
    * Separate carsinAreas from all cars inside the bounding box
    ****************************************************************************/
-   clock_t t3 = clock();
-    /* separate allcars that are near the areas */
-    for (size_t i = 0; i < no_carsBB; i++)
+  clock_t t3 = clock();
+  /* separate allcars that are near the areas */
+  for (size_t i = 0; i < no_carsBB; i++)
+  {
+    if (tpoint_at_stbox((const Temporal *)cars[i].trip, airport,true) || tpoint_at_stbox((const Temporal *)cars[i].trip,bay,true))
     {
-      if (eintersects_tpoint_geo((const Temporal *) cars[i].trip, areas[1].geom)
-      || eintersects_tpoint_geo((const Temporal *) cars[i].trip, areas[0].geom))
-      {    
-        carsinAreas[no_carsinAreas].trj_id = cars[i].trj_id;
-        carsinAreas[no_carsinAreas].trip = tsequence_copy(cars[i].trip);
+      carsinAreas[no_carsinAreas].trj_id = cars[i].trj_id;
+      carsinAreas[no_carsinAreas].trip = tsequence_copy(cars[i].trip);
 
-        // char *seq1_wkt = tpoint_as_ewkt((Temporal *) cars[i].trip, 2);
-        // char *seq2_wkt = tpoint_as_ewkt((Temporal *) carsinAreas[no_carsinAreas].trip , 2);
-        // printf("\nseql: %s\nseq2: %s\n", seq1_wkt, seq2_wkt);
-        no_carsinAreas++;
-      }
-    } 
-    printf("%d cars in the areas\n", no_carsinAreas);
-    t3 = clock() - t3;
-    double time_taken3 = ((double) t3) / CLOCKS_PER_SEC;
-    printf("The program took %f seconds to separate carsinAreas from all cars inside the bounding box\n", time_taken3);
-
-
-   /***************************************************************************
+      // char *seq1_wkt = tpoint_as_ewkt((Temporal *) cars[i].trip, 2);
+      // char *seq2_wkt = tpoint_as_ewkt((Temporal *) carsinAreas[no_carsinAreas].trip , 2);
+      // printf("\nseql: %s\nseq2: %s\n", seq1_wkt, seq2_wkt);
+      no_carsinAreas++;
+    }
+  }
+  printf("%d cars in the areas\n", no_carsinAreas);
+  t3 = clock() - t3;
+  double time_taken3 = ((double)t3) / CLOCKS_PER_SEC;
+  printf("The program took %f seconds to separate carsinAreas from all cars inside the bounding box\n", time_taken3);
+  /***************************************************************************
    * Split carsinAreas trips into trips between areas - AtGeometry
    ****************************************************************************/
-    clock_t t4 = clock();
-    /* Separate trips that are near the areas atSTbox */
-    for (int i = 0; i < no_carsinAreas; i++)
+  clock_t t4 = clock();
+  /* Separate trips that are near the areas atSTbox */
+  for (int i = 0; i < no_carsinAreas; i++)
+  {
+    for (int j = 0; j < no_areas + 1; j++)
     {
-      for (int j = 0; j < no_areas+1; j++)
+      if (tpoint_at_stbox((const Temporal *)cars[i].trip, bigBB,true))
       {
-        if (eintersects_tpoint_geo((const Temporal *) carsinAreas[i].trip, areas[j].geom))
-        {
-          Temporal *atgeom = tpoint_at_geom_time((const Temporal *)carsinAreas[i].trip, areas[j].geom, NULL, NULL);
-          //printf("car %ld is in area %d\n", carsinAreas[i].trj_id, j);
-
-          if (atgeom)
-          {
-            carsTrips[no_trips].trj_id = carsinAreas[i].trj_id;
-            carsTrips[no_trips].trip = tsequence_copy(carsinAreas[i].trip);
-            no_trips++;
-            free(atgeom);
-          }
-        }
+        carsTrips[no_trips].trj_id = carsinAreas[i].trj_id;
+        carsTrips[no_trips].trip = tsequence_copy(carsinAreas[i].trip);
+        no_trips++;
       }
     }
-    printf("%d trips between areas with atGeometry\n", no_trips);
-    t4 = clock() - t4;
-    double time_taken4 = ((double) t4) / CLOCKS_PER_SEC;
-    printf("The program took %f seconds to separate trips between areas with atGeometry\n", time_taken4);
-
-
-   /***************************************************************************
+  }
+  printf("%d trips between areas with atGeometry\n", no_trips);
+  t4 = clock() - t4;
+  double time_taken4 = ((double)t4) / CLOCKS_PER_SEC;
+  printf("The program took %f seconds to separate trips between areas with atGeometry\n", time_taken4);
+  /***************************************************************************
    * Split carsinAreas trips into trips between areas - AtStops
    ****************************************************************************/
-     /* Separate trips that are near the areas atSTbox */
-    // for (int i = 0; i < no_carsinAreas; i++)
-    // {
-    //   for (int j = 0; j < no_areas; j++)
-    //   {
-    //     char *seq_wkt = tpoint_as_ewkt((Temporal *) carsinAreas[i].trip, 2);
-    //     printf("\nseql: %sn", seq_wkt);
-    //     TSequenceSet * atstops =  temporal_stops((const Temporal *)carsinAreas[i].trip,25,'one day');
-    //     if (1)
-    //     {
-    //       printf("\n car %ld is in area %d\n", carsinAreas[i].trj_id, j);
-    //       carsTrips2[no_trips2].trj_id = carsinAreas[i].trj_id;
-    //       carsTrips2[no_trips2].trip = tsequence_copy(carsinAreas[i].trip);
-    //       char *seq1_wkt = tpoint_as_ewkt((Temporal *) carsinAreas[i].trip, 2);
-    //       char *seq2_wkt = tpoint_as_ewkt((Temporal *) carsTrips2[no_trips2].trip , 2);
-    //       printf("\nseql: %s\nseq2: %s\n", seq1_wkt, seq2_wkt);
+  /* Separate trips that are near the areas atSTbox */
+  // for (int i = 0; i < no_carsinAreas; i++)
+  // {
+  //   for (int j = 0; j < no_areas; j++)
+  //   {
+  //     char *seq_wkt = tpoint_as_ewkt((Temporal *) carsinAreas[i].trip, 2);
+  //     printf("\nseql: %sn", seq_wkt);
+  //     TSequenceSet * atstops =  temporal_stops((const Temporal *)carsinAreas[i].trip,25,'one day');
+  //     if (1)
+  //     {
+  //       printf("\n car %ld is in area %d\n", carsinAreas[i].trj_id, j);
+  //       carsTrips2[no_trips2].trj_id = carsinAreas[i].trj_id;
+  //       carsTrips2[no_trips2].trip = tsequence_copy(carsinAreas[i].trip);
+  //       char *seq1_wkt = tpoint_as_ewkt((Temporal *) carsinAreas[i].trip, 2);
+  //       char *seq2_wkt = tpoint_as_ewkt((Temporal *) carsTrips2[no_trips2].trip , 2);
+  //       printf("\nseql: %s\nseq2: %s\n", seq1_wkt, seq2_wkt);
 
-    //       no_trips2++;
-    //       //free(atstops);
-    //     }
-    //   }
-    // }
-    // printf("%d trips between areas with atStops\n", no_trips2);
-  
-
-   /***************************************************************************
+  //       no_trips2++;
+  //       //free(atstops);
+  //     }
+  //   }
+  // }
+  // printf("%d trips between areas with atStops\n", no_trips2);
+  /***************************************************************************
    * Section 5 : Trips Functions
    ****************************************************************************/
+  /* Total distance */
+  clock_t t5 = clock();
+  double totalDistance = 0;
+  double dist;
+  TSequence *speed[MAX_CARS] = {0};
 
-    /* Total distance */
-    clock_t t5 = clock();
-    double totalDistance = 0;
-    double dist;
-    TSequence * speed[MAX_CARS] = {0};
-    
-    for (int i = 0; i < numcars; i++)
-    {
-      dist = tpoint_length((const Temporal *) allcars[i].trip);
-      totalDistance += dist;
-    }
-    printf("Total Distance is %lf\n", totalDistance);
-    t5 = clock() - t5;
-    double time_taken5 = ((double) t5) / CLOCKS_PER_SEC;
-    printf("The program took %f seconds to calculate distance\n", time_taken5);
+  for (int i = 0; i < numcars; i++)
+  {
+    dist = tpoint_length((const Temporal *)allcars[i].trip);
+    totalDistance += dist;
+  }
+  printf("Total Distance is %lf\n", totalDistance);
+  t5 = clock() - t5;
+  double time_taken5 = ((double)t5) / CLOCKS_PER_SEC;
+  printf("The program took %f seconds to calculate distance\n", time_taken5);
 
+  clock_t t6 = clock();
+  /* Speed */
+  for (int i = 0; i < numcars; i++)
+  {
+    speed[i] = (TSequence *)tpointseq_speed((const TSequence *)allcars[i].trip);
+    size_t length;
+  }
+  t6 = clock() - t6;
+  printf("Total Speed is %lf\n", totalDistance);
+  double time_taken6 = ((double)t6) / CLOCKS_PER_SEC;
+  printf("The program took %f seconds to calculate speed\n", time_taken6);
 
-    clock_t t6 = clock();
-    /* Speed */
-    for (int i = 0; i < numcars; i++)
-    {
-      speed[i] = (TSequence  *)tpointseq_speed((const TSequence *) allcars[i].trip);
-      size_t length;
-    }
-    t6 = clock() - t6;
-    printf("Total Distance is %lf\n", totalDistance);
-    double time_taken6 = ((double) t6) / CLOCKS_PER_SEC;
-    printf("The program took %f seconds to calculate speed\n", time_taken6);
-
-
-
-   /***************************************************************************
+  /***************************************************************************
    * Section 6: Car that get less than 1 km from each other
    ****************************************************************************/
-    int nuncars_tooClose = 0;
-    int ids[MAX_CARS] = {0};
-    clock_t t7 = clock();
+  int nuncars_tooClose = 0;
+  int ids[MAX_CARS] = {0};
+  clock_t t7 = clock();
 
-    /* Find cars that are near carsinAreas within 1 meter */
-    for (size_t i = 0; i < numcars; i++)
+  /* Find cars that are near carsinAreas within 1 meter */
+  for (size_t i = 0; i < numcars; i++)
+  {
+    for (size_t j = 0; j < i + 1; j++)
     {
-      for (size_t j = 0; j < i+1; j++)
+      if (allcars[i].trj_id != allcars[j].trj_id)
       {
-        if (allcars[i].trj_id != allcars[j].trj_id)
+        Temporal *aux = tdwithin_tpoint_tpoint((const Temporal *)allcars[i].trip, (const Temporal *)allcars[j].trip, 1000000, false, false);
+        if (aux)
         {
-          Temporal * aux = tdwithin_tpoint_tpoint((const Temporal *)allcars[i].trip, (const Temporal *)allcars[j].trip,1000000,false,false);
-          if (aux)
+          if (ids[i] == 0 && ids[j] == 0)
           {
-            if (ids[i] == 0 && ids[j] == 0)
-            {
-              ids[i]= 1;
-              ids[j]= 1;
-              nuncars_tooClose++;
-            }
-            free(aux);
+            ids[i] = 1;
+            ids[j] = 1;
+            nuncars_tooClose++;
           }
+          free(aux);
         }
       }
     }
-    printf("%d cars that get less than 1 km from each other\n", nuncars_tooClose);
-    t7 = clock() - t7;
-    double time_taken7 = ((double) t7) / CLOCKS_PER_SEC;
-    printf("The program took %f seconds to calculate cars that get less than 1 km from each other\n", time_taken7);
-
-    /***************************************************************************/
+  }
+  printf("%d cars that get less than 1 km from each other\n", nuncars_tooClose);
+  t7 = clock() - t7;
+  double time_taken7 = ((double)t7) / CLOCKS_PER_SEC;
+  printf("The program took %f seconds to calculate cars that get less than 1 km from each other\n", time_taken7);
+  /***************************************************************************/
 
   t = clock() - t;
-  double time_taken = ((double) t) / CLOCKS_PER_SEC;
+  double time_taken = ((double)t) / CLOCKS_PER_SEC;
   printf("The program took %f seconds to execute\n", time_taken);
 
 /* Clean up */
 cleanup:
- /* Free memory */
+  /* Free memory */
   for (i = 0; i < numcars; i++)
     free(allcars[i].trip);
-
   /* Finalize MEOS */
   meos_finalize();
-
-  // /* Close the connection to the logfile */
+  /* Close the connection to the logfile */
   fclose(fileIn);
-
   return return_value;
 }
